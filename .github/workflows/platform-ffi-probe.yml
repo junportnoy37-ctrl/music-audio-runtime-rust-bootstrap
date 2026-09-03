@@ -1,0 +1,71 @@
+name: Cross-platform native FFI probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/platform-ffi-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus X11 C shim
+        run: |
+          cat > shim.c <<'EOF'
+          #include <X11/Xlib.h>
+          int mar_platform_probe(void) { return XInitThreads() != 0; }
+          EOF
+          cat > main.rs <<'EOF'
+          unsafe extern "C" { fn mar_platform_probe() -> i32; }
+          fn main() { let v = unsafe { mar_platform_probe() }; assert!(v >= 0); println!("LINUX_NATIVE_FFI_OK {v}"); }
+          EOF
+          cc -O2 -c shim.c -o shim.o
+          rustc +1.88.0 -O main.rs -C link-arg=shim.o -C link-arg=-lX11 -o probe
+          ./probe
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - name: Install Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus AppKit Objective-C shim
+        run: |
+          cat > shim.m <<'EOF'
+          #import <AppKit/AppKit.h>
+          int mar_platform_probe(void) { return [NSScreen screens] != nil; }
+          EOF
+          cat > main.rs <<'EOF'
+          unsafe extern "C" { fn mar_platform_probe() -> i32; }
+          fn main() { let v = unsafe { mar_platform_probe() }; assert!(v >= 0); println!("MACOS_NATIVE_FFI_OK {v}"); }
+          EOF
+          clang -O2 -c shim.m -o shim.o
+          rustc +1.88.0 -O main.rs -C link-arg=shim.o -C link-arg=-framework -C link-arg=AppKit -o probe
+          ./probe
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Install Rust 1.88
+        shell: pwsh
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus Win32 C shim
+        shell: pwsh
+        run: |
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          __declspec(dllexport) int mar_platform_probe(void) { return GetSystemMetrics(SM_CXSCREEN) >= 0; }
+          '@ | Set-Content shim.c
+          @'
+          unsafe extern "C" { fn mar_platform_probe() -> i32; }
+          fn main() { let v = unsafe { mar_platform_probe() }; assert!(v >= 0); println!("WINDOWS_NATIVE_FFI_OK {v}"); }
+          '@ | Set-Content main.rs
+          cl /nologo /O2 /c shim.c /Foshim.obj
+          rustc +1.88.0 -O main.rs -C link-arg=shim.obj -C link-arg=User32.lib -o probe.exe
+          .\probe.exe
