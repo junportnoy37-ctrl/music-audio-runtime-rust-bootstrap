@@ -1,0 +1,21 @@
+name: Cleanup sandbox bridge artifact
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cleanup-bridge.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete imported bridge artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/actions/artifacts/9887577788"
