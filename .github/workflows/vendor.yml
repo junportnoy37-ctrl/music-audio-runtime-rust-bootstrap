@@ -92,13 +92,3 @@ jobs:
               --title "Rust vendor ${{ steps.package.outputs.short_sha }}" \
               --notes "Offline Cargo vendor bundle generated and checked with Rust 1.88.0. Contains no private project source."
           fi
-
-      - name: Upload short-lived sandbox bridge
-        uses: actions/upload-artifact@v4
-        with:
-          name: vendor-bridge
-          path: |
-            ${{ steps.package.outputs.archive }}
-            ${{ steps.package.outputs.archive }}.sha256
-          compression-level: 0
-          retention-days: 1
