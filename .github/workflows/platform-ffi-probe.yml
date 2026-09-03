@@ -13,8 +13,11 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Rust 1.88
-        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install native X11 SDK and Rust 1.88
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libx11-dev
+          rustup toolchain install 1.88.0 --profile minimal
       - name: Build Rust plus X11 C shim
         run: |
           cat > shim.c <<'EOF'
@@ -60,12 +63,15 @@ jobs:
           @'
           #define WIN32_LEAN_AND_MEAN
           #include <windows.h>
-          __declspec(dllexport) int mar_platform_probe(void) { return GetSystemMetrics(SM_CXSCREEN) >= 0; }
+          int mar_platform_probe(void) { return GetSystemMetrics(SM_CXSCREEN) >= 0; }
           '@ | Set-Content shim.c
           @'
           unsafe extern "C" { fn mar_platform_probe() -> i32; }
           fn main() { let v = unsafe { mar_platform_probe() }; assert!(v >= 0); println!("WINDOWS_NATIVE_FFI_OK {v}"); }
           '@ | Set-Content main.rs
-          cl /nologo /O2 /c shim.c /Foshim.obj
-          rustc +1.88.0 -O main.rs -C link-arg=shim.obj -C link-arg=User32.lib -o probe.exe
-          .\probe.exe
+          $vswhere = "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ tools not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $cmd = 'call "' + $vcvars + '" && cl /nologo /O2 /c shim.c /Foshim.obj && rustc +1.88.0 -O main.rs -C link-arg=shim.obj -C link-arg=User32.lib -o probe.exe && probe.exe'
+          cmd.exe /d /s /c $cmd
