@@ -1,0 +1,91 @@
+name: Cross-platform native audio FFI probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/native-audio-ffi-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux-alsa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install ALSA SDK and Rust 1.88
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libasound2-dev
+          rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus ALSA C shim
+        run: |
+          cat > shim.c <<'EOF'
+          #include <alsa/asoundlib.h>
+          int mar_audio_probe(void) { const char* v = snd_asoundlib_version(); return v && *v ? 1 : 0; }
+          EOF
+          cat > main.rs <<'EOF'
+          unsafe extern "C" { fn mar_audio_probe() -> i32; }
+          fn main() { let v = unsafe { mar_audio_probe() }; assert_eq!(v, 1); println!("ALSA_NATIVE_FFI_OK"); }
+          EOF
+          cc -O2 -c shim.c -o shim.o
+          rustc +1.88.0 -O main.rs -C link-arg=shim.o -C link-arg=-lasound -o probe
+          ./probe
+
+  macos-coreaudio:
+    runs-on: macos-15
+    steps:
+      - name: Install Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus CoreAudio C shim
+        run: |
+          cat > shim.c <<'EOF'
+          #include <CoreAudio/CoreAudio.h>
+          int mar_audio_probe(void) {
+            AudioObjectPropertyAddress a = { kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+            UInt32 size = 0;
+            OSStatus s = AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &a, 0, 0, &size);
+            return s == noErr ? 1 : 0;
+          }
+          EOF
+          cat > main.rs <<'EOF'
+          unsafe extern "C" { fn mar_audio_probe() -> i32; }
+          fn main() { let v = unsafe { mar_audio_probe() }; assert!(v == 0 || v == 1); println!("COREAUDIO_NATIVE_FFI_OK {v}"); }
+          EOF
+          clang -O2 -c shim.c -o shim.o
+          rustc +1.88.0 -O main.rs -C link-arg=shim.o -C link-arg=-framework -C link-arg=CoreAudio -o probe
+          ./probe
+
+  windows-wasapi:
+    runs-on: windows-latest
+    steps:
+      - name: Install Rust 1.88
+        shell: pwsh
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus WASAPI C++ shim
+        shell: pwsh
+        run: |
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <mmdeviceapi.h>
+          #include <objbase.h>
+          extern "C" int mar_audio_probe(void) {
+            HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            IMMDeviceEnumerator* e = nullptr;
+            HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&e);
+            if (e) e->Release();
+            if (SUCCEEDED(init)) CoUninitialize();
+            return SUCCEEDED(hr) ? 1 : 0;
+          }
+          '@ | Set-Content shim.cpp
+          @'
+          unsafe extern "C" { fn mar_audio_probe() -> i32; }
+          fn main() { let v = unsafe { mar_audio_probe() }; assert!(v == 0 || v == 1); println!("WASAPI_NATIVE_FFI_OK {v}"); }
+          '@ | Set-Content main.rs
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ tools not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $cmd = 'call "' + $vcvars + '" && cl /nologo /O2 /EHsc /c shim.cpp /Foshim.obj && rustc +1.88.0 -O main.rs -C link-arg=shim.obj -C link-arg=Ole32.lib -C link-arg=Uuid.lib -o probe.exe && probe.exe'
+          cmd.exe /d /s /c $cmd
