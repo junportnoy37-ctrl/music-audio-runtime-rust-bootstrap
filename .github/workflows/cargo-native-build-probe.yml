@@ -1,0 +1,152 @@
+name: Cargo owned native shim build probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cargo-native-build-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install native SDK and Rust
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libx11-dev
+          rustup toolchain install 1.88.0 --profile minimal
+      - name: Create probe crate
+        shell: bash
+        run: |
+          mkdir -p probe/src probe/native
+          cat > probe/Cargo.toml <<'EOF'
+          [package]
+          name = "cargo-native-build-probe"
+          version = "0.1.0"
+          edition = "2024"
+          rust-version = "1.88"
+          build = "build.rs"
+          EOF
+          cat > probe/src/main.rs <<'EOF'
+          unsafe extern "C" { fn mar_native_probe() -> i32; }
+          fn main() { assert!(unsafe { mar_native_probe() } >= 0); println!("CARGO_NATIVE_BUILD_OK"); }
+          EOF
+          cat > probe/native/shim.c <<'EOF'
+          #include <X11/Xlib.h>
+          int mar_native_probe(void) { return XInitThreads() != 0; }
+          EOF
+          cat > probe/build.rs <<'EOF'
+          use std::{env, path::PathBuf, process::Command};
+          fn must(mut c: Command) { let s = c.status().expect("spawn native compiler"); assert!(s.success(), "native compiler failed"); }
+          fn main() {
+              println!("cargo:rerun-if-changed=native/shim.c");
+              let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+              let obj = out.join("shim.o");
+              let lib = out.join("libmar_native.a");
+              let mut cc = Command::new("cc"); cc.args(["-O2", "-c", "native/shim.c", "-o"]).arg(&obj); must(cc);
+              let mut ar = Command::new("ar"); ar.arg("crs").arg(&lib).arg(&obj); must(ar);
+              println!("cargo:rustc-link-search=native={}", out.display());
+              println!("cargo:rustc-link-lib=static=mar_native");
+              println!("cargo:rustc-link-lib=X11");
+          }
+          EOF
+      - name: Build and run with Cargo only
+        run: cd probe && cargo +1.88.0 run --release --offline
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - name: Install Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Create probe crate
+        shell: bash
+        run: |
+          mkdir -p probe/src probe/native
+          cat > probe/Cargo.toml <<'EOF'
+          [package]
+          name = "cargo-native-build-probe"
+          version = "0.1.0"
+          edition = "2024"
+          rust-version = "1.88"
+          build = "build.rs"
+          EOF
+          cat > probe/src/main.rs <<'EOF'
+          unsafe extern "C" { fn mar_native_probe() -> i32; }
+          fn main() { assert!(unsafe { mar_native_probe() } >= 0); println!("CARGO_NATIVE_BUILD_OK"); }
+          EOF
+          cat > probe/native/shim.m <<'EOF'
+          #import <AppKit/AppKit.h>
+          int mar_native_probe(void) { return [NSScreen screens] != nil; }
+          EOF
+          cat > probe/build.rs <<'EOF'
+          use std::{env, path::PathBuf, process::Command};
+          fn must(mut c: Command) { let s = c.status().expect("spawn native compiler"); assert!(s.success(), "native compiler failed"); }
+          fn main() {
+              println!("cargo:rerun-if-changed=native/shim.m");
+              let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+              let obj = out.join("shim.o");
+              let lib = out.join("libmar_native.a");
+              let mut cc = Command::new("clang"); cc.args(["-O2", "-c", "native/shim.m", "-o"]).arg(&obj); must(cc);
+              let mut ar = Command::new("ar"); ar.arg("crs").arg(&lib).arg(&obj); must(ar);
+              println!("cargo:rustc-link-search=native={}", out.display());
+              println!("cargo:rustc-link-lib=static=mar_native");
+              println!("cargo:rustc-link-lib=framework=AppKit");
+          }
+          EOF
+      - name: Build and run with Cargo only
+        run: cd probe && cargo +1.88.0 run --release --offline
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Install Rust
+        shell: pwsh
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Create probe crate
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force probe/src, probe/native | Out-Null
+          @'
+          [package]
+          name = "cargo-native-build-probe"
+          version = "0.1.0"
+          edition = "2024"
+          rust-version = "1.88"
+          build = "build.rs"
+          '@ | Set-Content probe/Cargo.toml
+          @'
+          unsafe extern "C" { fn mar_native_probe() -> i32; }
+          fn main() { assert!(unsafe { mar_native_probe() } >= 0); println!("CARGO_NATIVE_BUILD_OK"); }
+          '@ | Set-Content probe/src/main.rs
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          int mar_native_probe(void) { return GetSystemMetrics(SM_CXSCREEN) >= 0; }
+          '@ | Set-Content probe/native/shim.c
+          @'
+          use std::{env, path::PathBuf, process::Command};
+          fn must(mut c: Command) { let s = c.status().expect("spawn native compiler"); assert!(s.success(), "native compiler failed"); }
+          fn main() {
+              println!("cargo:rerun-if-changed=native/shim.c");
+              let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+              let obj = out.join("shim.obj");
+              let lib = out.join("mar_native.lib");
+              let mut cc = Command::new("cl.exe"); cc.args(["/nologo", "/O2", "/c", "native/shim.c"]).arg(format!("/Fo{}", obj.display())); must(cc);
+              let mut librarian = Command::new("lib.exe"); librarian.arg("/nologo").arg(format!("/OUT:{}", lib.display())).arg(&obj); must(librarian);
+              println!("cargo:rustc-link-search=native={}", out.display());
+              println!("cargo:rustc-link-lib=static=mar_native");
+              println!("cargo:rustc-link-lib=User32");
+          }
+          '@ | Set-Content probe/build.rs
+      - name: Build and run with Cargo in native SDK environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ tools not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $cmd = 'call "' + $vcvars + '" && cd probe && cargo +1.88.0 run --release --offline'
+          cmd.exe /d /s /c $cmd
