@@ -1,0 +1,86 @@
+name: Cross-platform native GPU FFI probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/native-gpu-ffi-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux-vulkan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Vulkan SDK headers and Rust
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libvulkan-dev
+          rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus Vulkan C shim
+        run: |
+          cat > shim.c <<'EOF'
+          #include <vulkan/vulkan.h>
+          int mar_gpu_probe(void) {
+            uint32_t version = VK_API_VERSION_1_0;
+            VkResult r = vkEnumerateInstanceVersion(&version);
+            return r == VK_SUCCESS && version >= VK_API_VERSION_1_0 ? 1 : 0;
+          }
+          EOF
+          cat > main.rs <<'EOF'
+          unsafe extern "C" { fn mar_gpu_probe() -> i32; }
+          fn main() { assert_eq!(unsafe { mar_gpu_probe() }, 1); println!("VULKAN_NATIVE_FFI_OK"); }
+          EOF
+          cc -O2 -c shim.c -o shim.o
+          rustc +1.88.0 -O main.rs -C link-arg=shim.o -C link-arg=-lvulkan -o probe
+          ./probe
+
+  macos-metal:
+    runs-on: macos-15
+    steps:
+      - name: Install Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus Metal Objective-C shim
+        run: |
+          cat > shim.m <<'EOF'
+          #import <Metal/Metal.h>
+          int mar_gpu_probe(void) { id<MTLDevice> d = MTLCreateSystemDefaultDevice(); return d ? 1 : 0; }
+          EOF
+          cat > main.rs <<'EOF'
+          unsafe extern "C" { fn mar_gpu_probe() -> i32; }
+          fn main() { let v=unsafe { mar_gpu_probe() }; assert!(v==0 || v==1); println!("METAL_NATIVE_FFI_OK {v}"); }
+          EOF
+          clang -O2 -c shim.m -o shim.o
+          rustc +1.88.0 -O main.rs -C link-arg=shim.o -C link-arg=-framework -C link-arg=Metal -C link-arg=-framework -C link-arg=Foundation -o probe
+          ./probe
+
+  windows-d3d11:
+    runs-on: windows-latest
+    steps:
+      - name: Install Rust
+        shell: pwsh
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus D3D11 C++ shim
+        shell: pwsh
+        run: |
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <d3d11.h>
+          extern "C" int mar_gpu_probe(void) {
+            ID3D11Device* d=nullptr; ID3D11DeviceContext* c=nullptr; D3D_FEATURE_LEVEL fl{};
+            HRESULT hr=D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&d,&fl,&c);
+            if(c)c->Release(); if(d)d->Release(); return SUCCEEDED(hr)?1:0;
+          }
+          '@ | Set-Content shim.cpp
+          @'
+          unsafe extern "C" { fn mar_gpu_probe() -> i32; }
+          fn main() { let v=unsafe { mar_gpu_probe() }; assert!(v==0 || v==1); println!("D3D11_NATIVE_FFI_OK {v}"); }
+          '@ | Set-Content main.rs
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ tools not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $cmd = 'call "' + $vcvars + '" && cl /nologo /O2 /EHsc /c shim.cpp /Foshim.obj && rustc +1.88.0 -O main.rs -C link-arg=shim.obj -C link-arg=D3d11.lib -o probe.exe && probe.exe'
+          cmd.exe /d /s /c $cmd
