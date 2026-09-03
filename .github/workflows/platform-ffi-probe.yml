@@ -69,7 +69,7 @@ jobs:
           unsafe extern "C" { fn mar_platform_probe() -> i32; }
           fn main() { let v = unsafe { mar_platform_probe() }; assert!(v >= 0); println!("WINDOWS_NATIVE_FFI_OK {v}"); }
           '@ | Set-Content main.rs
-          $vswhere = "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vs) { throw 'Visual Studio C++ tools not found' }
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
