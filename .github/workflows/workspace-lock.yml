@@ -1,0 +1,152 @@
+name: Generate private-workspace lock contract
+
+on:
+  push:
+    paths:
+      - '.github/workflows/workspace-lock.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup override set 1.88.0
+      - name: Generate workspace-shaped Cargo.lock without private source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf workspace-lock-tmp
+          mkdir -p workspace-lock-tmp/crates/{mar-core,mar-cli,mar-audio,mar-runtime,mar-agent-api,mar-mcp-adapter}/src
+          cat > workspace-lock-tmp/Cargo.toml <<'EOF'
+          [workspace]
+          members = [
+              "crates/mar-core",
+              "crates/mar-cli",
+              "crates/mar-audio",
+              "crates/mar-runtime",
+              "crates/mar-agent-api",
+              "crates/mar-mcp-adapter",
+          ]
+          resolver = "2"
+
+          [workspace.package]
+          edition = "2024"
+          license = "UNLICENSED"
+          rust-version = "1.88"
+
+          [workspace.dependencies]
+          base64 = "0.23"
+          clap = { version = "4", features = ["derive"] }
+          rmcp = { version = "3.2.0", features = ["server", "macros", "schemars", "transport-io"] }
+          schemars = "1"
+          serde = { version = "1", features = ["derive"] }
+          serde_json = "1"
+          tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+          uuid = { version = "1", features = ["v4", "serde"] }
+          EOF
+          cat > workspace-lock-tmp/crates/mar-core/Cargo.toml <<'EOF'
+          [package]
+          name = "mar-core"
+          version = "0.1.0"
+          edition.workspace = true
+          license.workspace = true
+          rust-version.workspace = true
+          [dependencies]
+          serde.workspace = true
+          serde_json.workspace = true
+          uuid.workspace = true
+          EOF
+          cat > workspace-lock-tmp/crates/mar-audio/Cargo.toml <<'EOF'
+          [package]
+          name = "mar-audio"
+          version = "0.1.0"
+          edition.workspace = true
+          license.workspace = true
+          rust-version.workspace = true
+          EOF
+          cat > workspace-lock-tmp/crates/mar-runtime/Cargo.toml <<'EOF'
+          [package]
+          name = "mar-runtime"
+          version = "0.1.0"
+          edition.workspace = true
+          license.workspace = true
+          rust-version.workspace = true
+          [dependencies]
+          mar-core = { path = "../mar-core" }
+          mar-audio = { path = "../mar-audio" }
+          serde.workspace = true
+          EOF
+          cat > workspace-lock-tmp/crates/mar-agent-api/Cargo.toml <<'EOF'
+          [package]
+          name = "mar-agent-api"
+          version = "0.1.0"
+          edition.workspace = true
+          license.workspace = true
+          rust-version.workspace = true
+          [dependencies]
+          mar-audio = { path = "../mar-audio" }
+          mar-core = { path = "../mar-core" }
+          mar-runtime = { path = "../mar-runtime" }
+          serde.workspace = true
+          serde_json.workspace = true
+          EOF
+          cat > workspace-lock-tmp/crates/mar-cli/Cargo.toml <<'EOF'
+          [package]
+          name = "mar-cli"
+          version = "0.1.0"
+          edition.workspace = true
+          license.workspace = true
+          rust-version.workspace = true
+          [dependencies]
+          clap.workspace = true
+          mar-audio = { path = "../mar-audio" }
+          mar-core = { path = "../mar-core" }
+          mar-runtime = { path = "../mar-runtime" }
+          serde.workspace = true
+          serde_json.workspace = true
+          uuid.workspace = true
+          EOF
+          cat > workspace-lock-tmp/crates/mar-mcp-adapter/Cargo.toml <<'EOF'
+          [package]
+          name = "mar-mcp-adapter"
+          version = "0.1.0"
+          edition.workspace = true
+          license.workspace = true
+          rust-version.workspace = true
+          [dependencies]
+          base64.workspace = true
+          mar-agent-api = { path = "../mar-agent-api" }
+          rmcp.workspace = true
+          schemars.workspace = true
+          serde.workspace = true
+          serde_json.workspace = true
+          tokio.workspace = true
+          [dev-dependencies]
+          rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+          tokio = { workspace = true, features = ["process"] }
+          EOF
+          for c in mar-core mar-cli mar-audio mar-runtime mar-agent-api mar-mcp-adapter; do
+            printf '%s\n' 'pub fn lock_probe() {}' > "workspace-lock-tmp/crates/$c/src/lib.rs"
+          done
+          (cd workspace-lock-tmp && cargo generate-lockfile)
+          mkdir -p workspace-lock
+          cp workspace-lock-tmp/Cargo.lock workspace-lock/Cargo.lock
+          sha256sum workspace-lock/Cargo.lock
+      - name: Commit exact workspace lock contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add workspace-lock/Cargo.lock
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Update exact private-workspace lock contract'
+          git push
