@@ -1,0 +1,97 @@
+name: Cross-platform native text FFI probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/native-text-ffi-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux-harfbuzz-freetype:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install text SDKs and Rust 1.88
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libharfbuzz-dev libfreetype-dev pkg-config
+          rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus HarfBuzz FreeType C shim
+        run: |
+          cat > shim.c <<'EOF'
+          #include <hb.h>
+          #include <ft2build.h>
+          #include FT_FREETYPE_H
+          int mar_text_probe(void) {
+            FT_Library ft = 0;
+            if (!hb_version_atleast(1,0,0)) return 0;
+            if (FT_Init_FreeType(&ft) != 0) return 0;
+            FT_Done_FreeType(ft);
+            return 1;
+          }
+          EOF
+          cat > main.rs <<'EOF'
+          unsafe extern "C" { fn mar_text_probe() -> i32; }
+          fn main() { assert_eq!(unsafe { mar_text_probe() }, 1); println!("LINUX_TEXT_FFI_OK"); }
+          EOF
+          cc -O2 $(pkg-config --cflags harfbuzz freetype2) -c shim.c -o shim.o
+          rustc +1.88.0 -O main.rs -C link-arg=shim.o $(pkg-config --libs harfbuzz freetype2 | sed 's/[^ ]\+/-C link-arg=&/g') -o probe
+          ./probe
+
+  macos-coretext:
+    runs-on: macos-15
+    steps:
+      - name: Install Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus CoreText C shim
+        run: |
+          cat > shim.c <<'EOF'
+          #include <CoreText/CoreText.h>
+          int mar_text_probe(void) {
+            CTFontRef f = CTFontCreateWithName(CFSTR("Helvetica"), 12.0, NULL);
+            if (!f) return 0;
+            double size = CTFontGetSize(f);
+            CFRelease(f);
+            return size > 0.0 ? 1 : 0;
+          }
+          EOF
+          cat > main.rs <<'EOF'
+          unsafe extern "C" { fn mar_text_probe() -> i32; }
+          fn main() { assert_eq!(unsafe { mar_text_probe() }, 1); println!("MACOS_TEXT_FFI_OK"); }
+          EOF
+          clang -O2 -c shim.c -o shim.o
+          rustc +1.88.0 -O main.rs -C link-arg=shim.o -C link-arg=-framework -C link-arg=CoreText -C link-arg=-framework -C link-arg=CoreFoundation -o probe
+          ./probe
+
+  windows-directwrite:
+    runs-on: windows-latest
+    steps:
+      - name: Install Rust 1.88
+        shell: pwsh
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Rust plus DirectWrite C++ shim
+        shell: pwsh
+        run: |
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <dwrite.h>
+          extern "C" int mar_text_probe(void) {
+            IDWriteFactory* f = nullptr;
+            HRESULT hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&f));
+            if (f) f->Release();
+            return SUCCEEDED(hr) ? 1 : 0;
+          }
+          '@ | Set-Content shim.cpp
+          @'
+          unsafe extern "C" { fn mar_text_probe() -> i32; }
+          fn main() { assert_eq!(unsafe { mar_text_probe() }, 1); println!("WINDOWS_TEXT_FFI_OK"); }
+          '@ | Set-Content main.rs
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ tools not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $cmd = 'call "' + $vcvars + '" && cl /nologo /O2 /EHsc /c shim.cpp /Foshim.obj && rustc +1.88.0 -O main.rs -C link-arg=shim.obj -C link-arg=Dwrite.lib -o probe.exe && probe.exe'
+          cmd.exe /d /s /c $cmd
