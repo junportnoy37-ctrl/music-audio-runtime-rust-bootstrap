@@ -1,0 +1,119 @@
+name: Build AI Rust executor bridge
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ai-rust-executor-bridge.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchains
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup component add --toolchain 1.88.0 rustfmt clippy
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup component add --toolchain 1.98.1 rustfmt clippy
+          rustc +1.88.0 --version
+          cargo +1.88.0 --version
+          rustfmt +1.88.0 --version
+          cargo +1.88.0 clippy --version
+          rustc +1.98.1 --version
+          cargo +1.98.1 --version
+          rustfmt +1.98.1 --version
+          cargo +1.98.1 clippy --version
+
+      - name: Package direct toolchain roots
+        run: |
+          set -euo pipefail
+          rm -rf bridge smoke-188 smoke-stable
+          mkdir -p bridge smoke-188 smoke-stable
+          host="$(rustc +1.88.0 -vV | sed -n 's/^host: //p')"
+          msrv_root="$HOME/.rustup/toolchains/1.88.0-$host"
+          stable_root="$HOME/.rustup/toolchains/1.98.1-$host"
+          test -x "$msrv_root/bin/rustc"
+          test -x "$msrv_root/bin/cargo"
+          test -x "$msrv_root/bin/rustfmt"
+          test -x "$msrv_root/bin/clippy-driver"
+          test -x "$stable_root/bin/rustc"
+          test -x "$stable_root/bin/cargo"
+          test -x "$stable_root/bin/rustfmt"
+          test -x "$stable_root/bin/clippy-driver"
+          tar -C "$msrv_root" -czf bridge/rust-1.88.0-x86_64-unknown-linux-gnu-toolchain.tar.gz .
+          tar -C "$stable_root" -czf bridge/rust-1.98.1-x86_64-unknown-linux-gnu-toolchain.tar.gz .
+          tar -C smoke-188 -xzf bridge/rust-1.88.0-x86_64-unknown-linux-gnu-toolchain.tar.gz
+          tar -C smoke-stable -xzf bridge/rust-1.98.1-x86_64-unknown-linux-gnu-toolchain.tar.gz
+          smoke-188/bin/rustc --version
+          smoke-188/bin/cargo --version
+          smoke-188/bin/rustfmt --version
+          smoke-188/bin/clippy-driver --version
+          smoke-stable/bin/rustc --version
+          smoke-stable/bin/cargo --version
+          smoke-stable/bin/rustfmt --version
+          smoke-stable/bin/clippy-driver --version
+
+      - name: Add verified offline Cargo vendor snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download deps-02f7da342da03ea9 \
+            --pattern 'music-audio-runtime-rust-vendor-02f7da342da03ea9.tar.gz' \
+            --pattern 'music-audio-runtime-rust-vendor-02f7da342da03ea9.tar.gz.sha256' \
+            --dir bridge
+          (
+            cd bridge
+            sha256sum --check music-audio-runtime-rust-vendor-02f7da342da03ea9.tar.gz.sha256
+          )
+
+      - name: Write bridge manifest and checksums
+        run: |
+          set -euo pipefail
+          cat > bridge/BRIDGE_INFO.txt <<'EOF'
+          music-audio-runtime AI Rust executor bridge
+
+          Purpose:
+          - disposable/headless ChatGPT execution environments
+          - no private project source included
+          - direct binaries; rustup is not required after extraction
+
+          Toolchains:
+          - Rust 1.88.0 (MSRV), with cargo/rustfmt/clippy
+          - Rust 1.98.1 (pinned stable verification toolchain), with cargo/rustfmt/clippy
+
+          Dependency snapshot:
+          - music-audio-runtime-rust-vendor-02f7da342da03ea9.tar.gz
+          - expected vendor SHA-256: e57599a9a1a050c99e6802936d546a14e84700937c7ab357f57a2e1fddf4b93f
+
+          Extract each toolchain tarball into its own directory and invoke bin/rustc,
+          bin/cargo, bin/rustfmt, and bin/clippy-driver directly.
+          EOF
+          (
+            cd bridge
+            sha256sum \
+              rust-1.88.0-x86_64-unknown-linux-gnu-toolchain.tar.gz \
+              rust-1.98.1-x86_64-unknown-linux-gnu-toolchain.tar.gz \
+              music-audio-runtime-rust-vendor-02f7da342da03ea9.tar.gz \
+              > SHA256SUMS
+          )
+          cat bridge/BRIDGE_INFO.txt
+          cat bridge/SHA256SUMS
+
+      - name: Upload reusable executor bridge
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-audio-runtime-ai-rust-executor-bridge
+          path: bridge/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
