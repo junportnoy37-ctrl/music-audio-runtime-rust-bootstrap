@@ -1,0 +1,53 @@
+name: Fetch AIdol phrase fixture
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fetch-aidol-phrase-fixture.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch source, label, and license
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p fixture
+          base='https://raw.githubusercontent.com/lottev1991/Project-AIdol-Public-English-Dataset/master'
+          curl --fail --location --retry 3 "$base/wav/Coming_Of_Age.wav" -o source.wav
+          curl --fail --location --retry 3 "$base/lab/Coming_Of_Age.lab" -o fixture/Coming_Of_Age.lab
+          curl --fail --location --retry 3 "$base/LICENSE" -o fixture/LICENSE-Project-AIdol.txt
+
+      - name: Crop real singing phrase
+        shell: bash
+        run: |
+          set -euo pipefail
+          # HTK labels: ~1.092517s to 4.3378688s spans "you don't understand" and reaches the AP breath/pause.
+          ffmpeg -hide_banner -loglevel error -y -ss 1.00 -to 4.50 -i source.wav -ac 1 -ar 44100 -c:a pcm_s16le fixture/phrase_you_dont_understand_pcm16.wav
+          ffmpeg -hide_banner -loglevel error -y -i fixture/phrase_you_dont_understand_pcm16.wav -c:a pcm_f32le fixture/phrase_you_dont_understand_f32.wav
+          sed -n '1,24p' fixture/Coming_Of_Age.lab > fixture/phrase_labels_excerpt.lab
+          cat > fixture/SOURCE.md <<'EOF'
+          # Phrase fixture provenance
+
+          Source: lottev1991/Project-AIdol-Public-English-Dataset
+          File: wav/Coming_Of_Age.wav
+          Label: lab/Coming_Of_Age.lab
+          License: CC BY-SA 4.0 (see bundled LICENSE)
+          Crop: 1.00s to 4.50s
+          Purpose: real singing phrase with consonants, vowels, and AP breath/pause transition for pitch-DSP evaluation.
+          EOF
+          sha256sum fixture/* | tee fixture/SHA256SUMS
+          ffprobe -v error -show_entries stream=codec_name,sample_rate,channels,duration -of default=noprint_wrappers=1 fixture/phrase_you_dont_understand_pcm16.wav
+
+      - name: Upload fixture artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aidol-real-singing-phrase-fixture
+          path: fixture
+          if-no-files-found: error
+          retention-days: 30
