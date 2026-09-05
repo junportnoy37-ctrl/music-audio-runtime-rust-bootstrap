@@ -23,13 +23,30 @@ jobs:
           curl --fail --location --retry 3 "$base/lab/Coming_Of_Age.lab" -o fixture/Coming_Of_Age.lab
           curl --fail --location --retry 3 "$base/LICENSE" -o fixture/LICENSE-Project-AIdol.txt
 
-      - name: Crop real singing phrase
+      - name: Crop real singing phrase with Python stdlib
         shell: bash
         run: |
           set -euo pipefail
-          # HTK labels: ~1.092517s to 4.3378688s spans "you don't understand" and reaches the AP breath/pause.
-          ffmpeg -hide_banner -loglevel error -y -ss 1.00 -to 4.50 -i source.wav -ac 1 -ar 44100 -c:a pcm_s16le fixture/phrase_you_dont_understand_pcm16.wav
-          ffmpeg -hide_banner -loglevel error -y -i fixture/phrase_you_dont_understand_pcm16.wav -c:a pcm_f32le fixture/phrase_you_dont_understand_f32.wav
+          python - <<'PY'
+          import wave
+          start_s = 1.00
+          end_s = 4.50
+          with wave.open('source.wav', 'rb') as src:
+              assert src.getnchannels() == 1
+              assert src.getsampwidth() == 2
+              rate = src.getframerate()
+              start = round(start_s * rate)
+              frames = round((end_s - start_s) * rate)
+              src.setpos(start)
+              payload = src.readframes(frames)
+              params = src.getparams()
+          with wave.open('fixture/phrase_you_dont_understand_pcm16.wav', 'wb') as dst:
+              dst.setnchannels(params.nchannels)
+              dst.setsampwidth(params.sampwidth)
+              dst.setframerate(params.framerate)
+              dst.writeframes(payload)
+          print(f'rate={rate} frames={frames} duration={frames/rate:.6f}')
+          PY
           sed -n '1,24p' fixture/Coming_Of_Age.lab > fixture/phrase_labels_excerpt.lab
           cat > fixture/SOURCE.md <<'EOF'
           # Phrase fixture provenance
@@ -42,7 +59,6 @@ jobs:
           Purpose: real singing phrase with consonants, vowels, and AP breath/pause transition for pitch-DSP evaluation.
           EOF
           sha256sum fixture/* | tee fixture/SHA256SUMS
-          ffprobe -v error -show_entries stream=codec_name,sample_rate,channels,duration -of default=noprint_wrappers=1 fixture/phrase_you_dont_understand_pcm16.wav
 
       - name: Upload fixture artifact
         uses: actions/upload-artifact@v4
