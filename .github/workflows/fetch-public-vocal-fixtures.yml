@@ -1,0 +1,45 @@
+name: Fetch public vocal fixtures
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fetch-public-vocal-fixtures.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch public MIT-licensed human vocal samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p fixture
+          base='https://raw.githubusercontent.com/vocobox/human-voice-dataset/master/data/voices/martin/voyels/exports/mono'
+          curl --fail --location --retry 3 "$base/_-a-c3.wav" -o fixture/martin_a_c3.wav
+          curl --fail --location --retry 3 "$base/_-i-c3.wav" -o fixture/martin_i_c3.wav
+          curl --fail --location --retry 3 'https://raw.githubusercontent.com/vocobox/human-voice-dataset/master/LICENSE' -o fixture/LICENSE-vocobox-human-voice-dataset.txt
+          cat > fixture/SOURCE.md <<'EOF'
+          # Public human vocal fixtures
+
+          Source repository: https://github.com/vocobox/human-voice-dataset
+          Source singer: `martin`
+          Source files:
+          - `data/voices/martin/voyels/exports/mono/_-a-c3.wav`
+          - `data/voices/martin/voyels/exports/mono/_-i-c3.wav`
+
+          The source project describes these as real human singing-voice recordings and is distributed under the MIT License. These copies are fetched only as non-private DSP evaluation fixtures.
+          EOF
+          sha256sum fixture/* | tee fixture/SHA256SUMS
+          file fixture/*.wav
+
+      - name: Upload fixture artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-human-vocal-fixtures
+          path: fixture
+          if-no-files-found: error
+          retention-days: 30
